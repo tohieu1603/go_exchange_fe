@@ -70,12 +70,18 @@ http.interceptors.response.use(
         // a full reload that re-mounts the same probes ⇒ infinite loop. User
         // actions (login, place-order, etc.) still redirect normally.
         const url = original.url || '';
+        // GETs on these endpoints are fired on mount by Header / NotificationBell
+        // to detect login state. 401 on them while anonymous is expected; do
+        // NOT redirect or we will spam-reload the page.
+        const method = (original.method || 'get').toLowerCase();
         const isBackgroundProbe =
-          url.includes('/auth/profile') ||
-          url.includes('/auth/ws-token') ||
-          url.includes('/wallet/balances') ||
-          url.includes('/futures/positions/open') ||
-          url.includes('/notifications/unread-count');
+          method === 'get' && (
+            url.includes('/auth/profile') ||
+            url.includes('/auth/ws-token') ||
+            url.includes('/wallet/balances') ||
+            url.includes('/futures/positions/open') ||
+            url.startsWith('/notifications')
+          );
         if (!isBackgroundProbe && window.location.pathname !== '/auth/login') {
           window.location.href = '/auth/login';
         }
