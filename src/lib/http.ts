@@ -64,7 +64,21 @@ http.interceptors.response.use(
     if (!ok) {
       if (typeof window !== 'undefined') {
         authFailedAt = Date.now();
-        window.location.href = '/auth/login';
+        // Suppress the redirect for background "am I logged in?" probes that
+        // every page mount fires (profile, balances, ws-token, unread-count).
+        // A 401 on those is the *expected* anonymous state — redirecting causes
+        // a full reload that re-mounts the same probes ⇒ infinite loop. User
+        // actions (login, place-order, etc.) still redirect normally.
+        const url = original.url || '';
+        const isBackgroundProbe =
+          url.includes('/auth/profile') ||
+          url.includes('/auth/ws-token') ||
+          url.includes('/wallet/balances') ||
+          url.includes('/futures/positions/open') ||
+          url.includes('/notifications/unread-count');
+        if (!isBackgroundProbe && window.location.pathname !== '/auth/login') {
+          window.location.href = '/auth/login';
+        }
       }
       return Promise.reject(error);
     }
