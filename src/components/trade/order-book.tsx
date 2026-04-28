@@ -65,7 +65,11 @@ export function OrderBook({ pair, onPriceClick }: Props) {
   const [bids, setBids] = useState<Level[]>([]);
   const [asks, setAsks] = useState<Level[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>('both');
+  const [loaded, setLoaded] = useState(false);
   const [priceMovement, setPriceMovement] = useState<{ isUp: boolean; lastPrice: number }>({ isUp: true, lastPrice: 0 });
+
+  // Reset loaded flag when pair changes so the skeleton briefly reappears.
+  useEffect(() => { setLoaded(false); setBids([]); setAsks([]); }, [pair]);
 
   const fetchDepth = useCallback(async () => {
     const res = await api.market.depth(pair, 20).catch((err) => {
@@ -76,6 +80,10 @@ export function OrderBook({ pair, onPriceClick }: Props) {
       setBids((res.data.bids as number[][]).map((b) => [b[0], b[1]] as Level));
       setAsks((res.data.asks as number[][]).map((a) => [a[0], a[1]] as Level));
     }
+    // Mark loaded regardless of outcome — empty book is a valid state. Without
+    // this the skeleton stays forever on a fresh DB or a futures pair that has
+    // no spot depth.
+    setLoaded(true);
   }, [pair]);
 
   /* eslint-disable react-hooks/set-state-in-effect */
@@ -127,6 +135,8 @@ export function OrderBook({ pair, onPriceClick }: Props) {
   const bidRows = withCum(sortedBids, maxBidCum);
 
   const isEmpty = bids.length === 0 && asks.length === 0;
+  const showSkeleton = !loaded && isEmpty;
+  const showEmptyMessage = loaded && isEmpty;
 
   return (
     <div className="flex flex-col bg-bg-secondary h-full overflow-hidden">
@@ -168,10 +178,18 @@ export function OrderBook({ pair, onPriceClick }: Props) {
         <span className="flex-1 text-right text-[10px] text-text-muted">Total</span>
       </div>
 
-      {/* Skeleton when empty */}
-      {isEmpty && (
+      {/* Skeleton on first load */}
+      {showSkeleton && (
         <div className="px-2 py-1">
           {Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} cols={3} />)}
+        </div>
+      )}
+
+      {/* Empty state — no orders yet (e.g., fresh DB or low-volume pair) */}
+      {showEmptyMessage && (
+        <div className="flex-1 flex flex-col items-center justify-center text-center px-3 py-6 text-text-muted">
+          <span className="text-[11px] font-medium">No active orders</span>
+          <span className="text-[10px] mt-1 opacity-70">Be the first to place a limit order on this pair.</span>
         </div>
       )}
 
