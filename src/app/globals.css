@@ -194,8 +194,13 @@ input[type=number] {
   html { font-size: 14px; }
 }
 
+/* Use `clip` (not `hidden`) so child elements that legitimately need their
+   own horizontal scroll — Ant Design tables on mobile, sticky tab strips,
+   the interval selector — still scroll. `hidden` propagates upward and
+   freezes them. `clip` restricts visual overflow without disabling
+   descendant scroll containers. */
 body {
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 /* Prevent iOS auto-zoom on inputs (font-size must be ≥ 16px) */
@@ -205,15 +210,9 @@ body {
   }
 }
 
-/* Minimum tap target height */
-button, a, [role="button"] {
-  min-height: 36px;
-}
-@media (min-width: 768px) {
-  button, a, [role="button"] {
-    min-height: 32px;
-  }
-}
+/* Tap target sizing is handled per-component via Tailwind utilities
+   (e.g. `min-h-[36px]` on form CTAs). A blanket rule here breaks compact
+   areas like the header (48px tall) and stretches inline links unnaturally. */
 
 @layer utilities {
   /* Hide scrollbar but keep scroll functionality (used on tab strips, interval bars). */
