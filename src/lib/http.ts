@@ -70,18 +70,25 @@ http.interceptors.response.use(
         // a full reload that re-mounts the same probes ⇒ infinite loop. User
         // actions (login, place-order, etc.) still redirect normally.
         const url = original.url || '';
-        // GETs on these endpoints are fired on mount by Header / NotificationBell
-        // to detect login state. 401 on them while anonymous is expected; do
-        // NOT redirect or we will spam-reload the page.
         const method = (original.method || 'get').toLowerCase();
-        const isBackgroundProbe =
+        // Two classes of calls do NOT trigger a redirect on 401:
+        //   1. Background GETs fired on mount by Header / NotificationBell to
+        //      detect login state — 401 is the expected anonymous response.
+        //   2. Notification side-effects (mark-read, mark-all-read) — these
+        //      are non-critical UX actions; failing one should not log the
+        //      user out. They silently fail and the dropdown stays open.
+        const isBackgroundGet =
           method === 'get' && (
             url.includes('/auth/profile') ||
             url.includes('/auth/ws-token') ||
             url.includes('/wallet/balances') ||
-            url.includes('/futures/positions/open') ||
-            url.startsWith('/notifications')
+            url.includes('/futures/positions/open')
           );
+        const isNotificationCall = url.startsWith('/notifications');
+        // Market data is public (no auth). A 401 here would be a misconfigured
+        // gateway, not a session problem — never log the user out for it.
+        const isMarketRead = method === 'get' && url.startsWith('/market');
+        const isBackgroundProbe = isBackgroundGet || isNotificationCall || isMarketRead;
         if (!isBackgroundProbe && window.location.pathname !== '/auth/login') {
           window.location.href = '/auth/login';
         }
