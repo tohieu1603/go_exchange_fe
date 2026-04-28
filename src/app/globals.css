@@ -1,26 +1,263 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* Tailwind v4 dropped the implicit `cursor: pointer` on interactive elements.
+   Restore it for buttons, links, and anything with `onClick`-style affordance.
+   `!important` overrides preflight which sets `cursor: default` on buttons. */
+@layer base {
+  button:not(:disabled),
+  a[href],
+  [role="button"]:not([aria-disabled="true"]),
+  [onclick],
+  label[for],
+  summary,
+  select:not(:disabled) {
+    cursor: pointer !important;
+  }
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed !important;
   }
 }
 
+@theme {
+  --color-bg-primary: #0b0e11;
+  --color-bg-secondary: #181a20;
+  --color-bg-tertiary: #1e2329;
+  --color-bg-hover: #2b3139;
+  --color-accent: #f0b90b;
+  --color-accent-hover: #f8d12f;
+  --color-text-primary: #eaecef;
+  --color-text-secondary: #848e9c;
+  --color-text-muted: #5e6673;
+  --color-buy: #0ecb81;
+  --color-buy-bg: rgba(14, 203, 129, 0.1);
+  --color-sell: #f6465d;
+  --color-sell-bg: rgba(246, 70, 93, 0.1);
+  --color-border: #2b3139;
+  --color-border-light: #363d47;
+  --font-sans: var(--font-inter);
+}
+
+/* Elevation */
+:root {
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.5);
+  --shadow-lg: 0 12px 32px rgba(0,0,0,0.6);
+  --shadow-glow-buy: 0 0 16px rgba(14,203,129,0.25);
+  --shadow-glow-sell: 0 0 16px rgba(246,70,93,0.25);
+  --shadow-glow-accent: 0 0 16px rgba(240,185,11,0.3);
+
+  /* Motion */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --motion-slow: 320ms;
+  --motion-ease-out: cubic-bezier(0.22,1,0.36,1);
+  --motion-ease-in: cubic-bezier(0.32,0,0.67,0);
+
+  /* Blur */
+  --blur-sm: 8px;
+  --blur-md: 16px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: #0b0e11;
+  color: #eaecef;
+  min-height: 100%;
+  font-family: var(--font-inter), system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #181a20;
+}
+::-webkit-scrollbar-thumb {
+  background: #2b3139;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #434d58;
+}
+
+/* Ticker marquee */
+@keyframes marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.animate-marquee {
+  animation: marquee 30s linear infinite;
+}
+
+/* Glow effects */
+.glow-accent {
+  box-shadow: 0 0 20px rgba(240, 185, 11, 0.15);
+}
+.glow-buy {
+  box-shadow: 0 0 12px rgba(14, 203, 129, 0.2);
+}
+.glow-sell {
+  box-shadow: 0 0 12px rgba(246, 70, 93, 0.2);
+}
+
+/* Table row hover */
+.table-row-hover {
+  transition: background-color 0.15s ease;
+}
+.table-row-hover:hover {
+  background-color: #2b3139;
+}
+
+/* Gradient text */
+.gradient-text {
+  background: linear-gradient(135deg, #f0b90b, #f8d12f, #fcd535);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Binance-style number flash */
+.price-up { color: #0ecb81; transition: color 0.15s; }
+.price-down { color: #f6465d; transition: color 0.15s; }
+.row-flash-up { background-color: rgba(14,203,129,0.06); transition: background 0.3s; }
+.row-flash-down { background-color: rgba(246,70,93,0.06); transition: background 0.3s; }
+
+/* Hide number input spin buttons */
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type=number] {
+  -moz-appearance: textfield;
+}
+
+/* Price flash animation */
+@keyframes flash-green {
+  0% { background-color: rgba(14, 203, 129, 0.3); }
+  100% { background-color: transparent; }
+}
+@keyframes flash-red {
+  0% { background-color: rgba(246, 70, 93, 0.3); }
+  100% { background-color: transparent; }
+}
+.flash-green {
+  animation: flash-green 0.8s ease-out;
+}
+.flash-red {
+  animation: flash-red 0.8s ease-out;
+}
+
+/* Toast slide-in */
+@keyframes slide-in {
+  0% { transform: translateX(100%); opacity: 0; }
+  100% { transform: translateX(0); opacity: 1; }
+}
+.animate-slide-in {
+  animation: slide-in 0.25s ease-out;
+}
+
+/* Motion keyframes */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Utility classes */
+/* ── Mobile global tweaks ── */
+@media (max-width: 640px) {
+  html { font-size: 14px; }
+}
+
+body {
+  overflow-x: hidden;
+}
+
+/* Prevent iOS auto-zoom on inputs (font-size must be ≥ 16px) */
+@media (max-width: 640px) {
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Minimum tap target height */
+button, a, [role="button"] {
+  min-height: 36px;
+}
+@media (min-width: 768px) {
+  button, a, [role="button"] {
+    min-height: 32px;
+  }
+}
+
+@layer utilities {
+  /* Hide scrollbar but keep scroll functionality (used on tab strips, interval bars). */
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .glass-panel {
+    backdrop-filter: blur(var(--blur-md));
+    background: rgba(24,26,32,0.65);
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+
+  .focus-ring {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    transition: outline-color var(--motion-fast);
+  }
+  .focus-ring:focus-visible {
+    outline-color: var(--color-accent);
+  }
+
+  .press {
+    transition: transform var(--motion-fast) var(--motion-ease-out);
+  }
+  .press:active {
+    transform: scale(0.97);
+  }
+
+  .shimmer {
+    background: linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.04) 100%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s infinite;
+  }
+
+  .animate-fade-in {
+    animation: fadeIn var(--motion-base) var(--motion-ease-out);
+  }
+
+  .animate-scale-in {
+    animation: scaleIn var(--motion-fast) var(--motion-ease-out);
+  }
 }
