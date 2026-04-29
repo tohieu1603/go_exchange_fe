@@ -161,6 +161,8 @@ export const api = {
       post(`/admin/users/${userId}/orders/${orderId}/cancel`),
     closeUserPosition: (userId: number, positionId: number) =>
       post(`/admin/users/${userId}/positions/${positionId}/close`),
+    adjustBalance: (userId: number, currency: string, amount: number, reason: string) =>
+      post(`/admin/users/${userId}/wallets/${currency}/adjust`, { amount, reason }),
     updateUser: (userId: number, data: { fullName?: string; role?: string }) =>
       put(`/admin/users/${userId}`, data),
     updateKYC: (userId: number, status: string) =>

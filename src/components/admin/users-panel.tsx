@@ -198,6 +198,12 @@ function UserDrawer({
   const [activityPage, setActivityPage] = useState(1);
   const [activityTotalPages, setActivityTotalPages] = useState(1);
 
+  // Balance adjust form
+  const [adjustCurrency, setAdjustCurrency] = useState('USDT');
+  const [adjustAmount, setAdjustAmount] = useState('');
+  const [adjustReason, setAdjustReason] = useState('');
+  const [adjustLoading, setAdjustLoading] = useState(false);
+
   // Lock/Unlock state
   const [lockReason, setLockReason] = useState('');
   const [lockLoading, setLockLoading] = useState(false);
@@ -323,6 +329,26 @@ function UserDrawer({
       error(res.message || 'Cancel failed');
     }
     setActionPending(null);
+  }
+
+  async function handleAdjustBalance() {
+    const amt = parseFloat(adjustAmount);
+    if (!amt || amt === 0) { error('Enter a non-zero amount'); return; }
+    if (!adjustReason.trim()) { error('Reason is required'); return; }
+    setAdjustLoading(true);
+    const res = await api.admin.adjustBalance(user.id, adjustCurrency.toUpperCase(), amt, adjustReason.trim());
+    if (res.success) {
+      success(`Balance ${amt > 0 ? 'credited' : 'deducted'} ${Math.abs(amt)} ${adjustCurrency.toUpperCase()}`);
+      setAdjustAmount('');
+      setAdjustReason('');
+      // Refresh wallets list so admin sees the new balance immediately.
+      api.admin.userWallets(user.id).then((r) => {
+        if (r.success && r.data) setWallets(r.data as Wallet[]);
+      });
+    } else {
+      error(res.message || 'Adjustment failed');
+    }
+    setAdjustLoading(false);
   }
 
   async function handleClosePosition(positionId: number) {
@@ -584,32 +610,78 @@ function UserDrawer({
 
           {/* ── WALLETS TAB ── */}
           {tab === 'wallets' && (
-            <div>
-              <div className="text-[10px] text-text-muted uppercase tracking-wider mb-2 font-semibold">Wallets</div>
-              {walletsLoading ? (
-                <div className="text-xs text-text-secondary py-6 text-center">Loading wallets…</div>
-              ) : wallets.length === 0 ? (
-                <div className="text-xs text-text-secondary py-6 text-center">No wallets found</div>
-              ) : (
-                <div className="bg-bg-secondary border border-border divide-y divide-border">
-                  <div className="grid grid-cols-3 px-3 py-2 text-[10px] text-text-muted font-semibold uppercase tracking-wider">
-                    <span>Currency</span>
-                    <span className="text-right">Balance</span>
-                    <span className="text-right">Locked</span>
-                  </div>
-                  {wallets.map((w) => (
-                    <div key={w.currency} className="grid grid-cols-3 px-3 py-2.5 hover:bg-bg-hover transition-colors">
-                      <span className="text-xs font-semibold text-accent">{w.currency}</span>
-                      <span className="text-xs text-text-primary text-right font-mono">
-                        {typeof w.balance === 'number' ? w.balance.toLocaleString(undefined, { maximumFractionDigits: 8 }) : w.balance}
-                      </span>
-                      <span className="text-xs text-sell text-right font-mono">
-                        {typeof w.locked === 'number' ? w.locked.toLocaleString(undefined, { maximumFractionDigits: 8 }) : w.locked}
-                      </span>
+            <div className="space-y-4">
+              <div>
+                <div className="text-[10px] text-text-muted uppercase tracking-wider mb-2 font-semibold">Wallets</div>
+                {walletsLoading ? (
+                  <div className="text-xs text-text-secondary py-6 text-center">Loading wallets…</div>
+                ) : wallets.length === 0 ? (
+                  <div className="text-xs text-text-secondary py-6 text-center">No wallets found</div>
+                ) : (
+                  <div className="bg-bg-secondary border border-border divide-y divide-border">
+                    <div className="grid grid-cols-3 px-3 py-2 text-[10px] text-text-muted font-semibold uppercase tracking-wider">
+                      <span>Currency</span>
+                      <span className="text-right">Balance</span>
+                      <span className="text-right">Locked</span>
                     </div>
-                  ))}
+                    {wallets.map((w) => (
+                      <div key={w.currency} className="grid grid-cols-3 px-3 py-2.5 hover:bg-bg-hover transition-colors">
+                        <span className="text-xs font-semibold text-accent">{w.currency}</span>
+                        <span className="text-xs text-text-primary text-right font-mono">
+                          {typeof w.balance === 'number' ? w.balance.toLocaleString(undefined, { maximumFractionDigits: 8 }) : w.balance}
+                        </span>
+                        <span className="text-xs text-sell text-right font-mono">
+                          {typeof w.locked === 'number' ? w.locked.toLocaleString(undefined, { maximumFractionDigits: 8 }) : w.locked}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Manual balance adjustment — credit (positive) or deduct
+                  (negative). Reason is required and lands in audit_logs. */}
+              <div>
+                <div className="text-[10px] text-text-muted uppercase tracking-wider mb-2 font-semibold">Adjust Balance</div>
+                <div className="bg-bg-secondary border border-border p-3 space-y-2">
+                  <div className="flex gap-2">
+                    <input
+                      value={adjustCurrency}
+                      onChange={(e) => setAdjustCurrency(e.target.value)}
+                      placeholder="Currency"
+                      className="w-24 px-3 py-2 bg-bg-tertiary border border-border text-text-primary text-xs outline-none focus:border-accent uppercase"
+                    />
+                    <input
+                      type="number"
+                      step="any"
+                      value={adjustAmount}
+                      onChange={(e) => setAdjustAmount(e.target.value)}
+                      placeholder="Amount (+credit / -deduct)"
+                      className="flex-1 px-3 py-2 bg-bg-tertiary border border-border text-text-primary text-xs outline-none focus:border-accent font-mono"
+                    />
+                  </div>
+                  <input
+                    value={adjustReason}
+                    onChange={(e) => setAdjustReason(e.target.value)}
+                    placeholder="Reason (required, logged to audit)"
+                    className="w-full px-3 py-2 bg-bg-tertiary border border-border text-text-primary text-xs outline-none focus:border-accent"
+                  />
+                  <button
+                    onClick={() => {
+                      const n = parseFloat(adjustAmount);
+                      if (!Number.isFinite(n) || n === 0) { error('Enter a non-zero amount'); return; }
+                      const verb = n > 0 ? 'credit' : 'deduct';
+                      if (confirm(`${verb.toUpperCase()} ${Math.abs(n)} ${adjustCurrency.toUpperCase()} to user ${user.email}? Reason: "${adjustReason.trim()}"`)) {
+                        handleAdjustBalance();
+                      }
+                    }}
+                    disabled={adjustLoading || !adjustAmount || !adjustReason.trim()}
+                    className="px-4 py-2 bg-accent text-black text-xs font-semibold hover:bg-accent-hover transition-colors disabled:opacity-50"
+                  >
+                    {adjustLoading ? 'Applying…' : 'Apply Adjustment'}
+                  </button>
                 </div>
-              )}
+              </div>
             </div>
           )}
 
