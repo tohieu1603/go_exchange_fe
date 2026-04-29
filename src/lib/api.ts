@@ -163,6 +163,8 @@ export const api = {
       post(`/admin/users/${userId}/positions/${positionId}/close`),
     adjustBalance: (userId: number, currency: string, amount: number, reason: string) =>
       post(`/admin/users/${userId}/wallets/${currency}/adjust`, { amount, reason }),
+    adjustBalanceBatch: (userId: number, items: { currency: string; amount: number; reason: string }[]) =>
+      post(`/admin/users/${userId}/wallets/adjust-batch`, { items }),
     updateUser: (userId: number, data: { fullName?: string; role?: string }) =>
       put(`/admin/users/${userId}`, data),
     updateKYC: (userId: number, status: string) =>

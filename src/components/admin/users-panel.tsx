@@ -198,11 +198,20 @@ function UserDrawer({
   const [activityPage, setActivityPage] = useState(1);
   const [activityTotalPages, setActivityTotalPages] = useState(1);
 
-  // Balance adjust form
-  const [adjustCurrency, setAdjustCurrency] = useState('USDT');
-  const [adjustAmount, setAdjustAmount] = useState('');
-  const [adjustReason, setAdjustReason] = useState('');
+  // Balance adjust form — multi-row. Each row independent; submit batch.
+  type AdjustRow = { currency: string; amount: string; reason: string };
+  const [adjustRows, setAdjustRows] = useState<AdjustRow[]>([{ currency: 'USDT', amount: '', reason: '' }]);
   const [adjustLoading, setAdjustLoading] = useState(false);
+
+  function setAdjustRow(idx: number, patch: Partial<AdjustRow>) {
+    setAdjustRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  }
+  function addAdjustRow() {
+    setAdjustRows((prev) => [...prev, { currency: '', amount: '', reason: '' }]);
+  }
+  function removeAdjustRow(idx: number) {
+    setAdjustRows((prev) => prev.length === 1 ? prev : prev.filter((_, i) => i !== idx));
+  }
 
   // Lock/Unlock state
   const [lockReason, setLockReason] = useState('');
@@ -332,16 +341,34 @@ function UserDrawer({
   }
 
   async function handleAdjustBalance() {
-    const amt = parseFloat(adjustAmount);
-    if (!amt || amt === 0) { error('Enter a non-zero amount'); return; }
-    if (!adjustReason.trim()) { error('Reason is required'); return; }
+    // Pre-validate so we can confirm before hitting backend.
+    const items = adjustRows
+      .map((r) => ({
+        currency: r.currency.trim().toUpperCase(),
+        amount: parseFloat(r.amount),
+        reason: r.reason.trim(),
+      }))
+      .filter((r) => r.currency || r.amount || r.reason); // drop fully-empty rows
+
+    for (const r of items) {
+      if (!r.currency) { error('Currency is required on every row'); return; }
+      if (!Number.isFinite(r.amount) || r.amount === 0) { error(`Row ${r.currency}: enter a non-zero amount`); return; }
+      if (!r.reason) { error(`Row ${r.currency}: reason is required`); return; }
+    }
+    if (items.length === 0) { error('At least one row required'); return; }
+
     setAdjustLoading(true);
-    const res = await api.admin.adjustBalance(user.id, adjustCurrency.toUpperCase(), amt, adjustReason.trim());
+    const res = items.length === 1
+      ? await api.admin.adjustBalance(user.id, items[0].currency, items[0].amount, items[0].reason)
+      : await api.admin.adjustBalanceBatch(user.id, items);
     if (res.success) {
-      success(`Balance ${amt > 0 ? 'credited' : 'deducted'} ${Math.abs(amt)} ${adjustCurrency.toUpperCase()}`);
-      setAdjustAmount('');
-      setAdjustReason('');
-      // Refresh wallets list so admin sees the new balance immediately.
+      const data = res.data as { applied?: number; total?: number } | undefined;
+      if (data && typeof data.applied === 'number' && data.applied < (data.total ?? 0)) {
+        error(`Applied ${data.applied}/${data.total} rows — see results in audit log`);
+      } else {
+        success(items.length === 1 ? 'Balance adjusted' : `Applied ${items.length} adjustments`);
+      }
+      setAdjustRows([{ currency: 'USDT', amount: '', reason: '' }]);
       api.admin.userWallets(user.id).then((r) => {
         if (r.success && r.data) setWallets(r.data as Wallet[]);
       });
@@ -639,46 +666,74 @@ function UserDrawer({
                 )}
               </div>
 
-              {/* Manual balance adjustment — credit (positive) or deduct
-                  (negative). Reason is required and lands in audit_logs. */}
+              {/* Manual balance adjustment — multi-row. Each row: currency,
+                  signed amount (+credit / -deduct), reason (required, lands
+                  in audit_logs). Backend caps each row's |amount| via
+                  ADMIN_ADJUST_MAX_AMOUNT (default 100k). */}
               <div>
-                <div className="text-[10px] text-text-muted uppercase tracking-wider mb-2 font-semibold">Adjust Balance</div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-[10px] text-text-muted uppercase tracking-wider font-semibold">Adjust Balance</div>
+                  <button
+                    onClick={addAdjustRow}
+                    className="text-[10px] px-2 py-0.5 bg-bg-tertiary text-text-secondary border border-border hover:text-accent hover:border-accent transition-colors"
+                  >
+                    + Add row
+                  </button>
+                </div>
                 <div className="bg-bg-secondary border border-border p-3 space-y-2">
-                  <div className="flex gap-2">
-                    <input
-                      value={adjustCurrency}
-                      onChange={(e) => setAdjustCurrency(e.target.value)}
-                      placeholder="Currency"
-                      className="w-24 px-3 py-2 bg-bg-tertiary border border-border text-text-primary text-xs outline-none focus:border-accent uppercase"
-                    />
-                    <input
-                      type="number"
-                      step="any"
-                      value={adjustAmount}
-                      onChange={(e) => setAdjustAmount(e.target.value)}
-                      placeholder="Amount (+credit / -deduct)"
-                      className="flex-1 px-3 py-2 bg-bg-tertiary border border-border text-text-primary text-xs outline-none focus:border-accent font-mono"
-                    />
-                  </div>
-                  <input
-                    value={adjustReason}
-                    onChange={(e) => setAdjustReason(e.target.value)}
-                    placeholder="Reason (required, logged to audit)"
-                    className="w-full px-3 py-2 bg-bg-tertiary border border-border text-text-primary text-xs outline-none focus:border-accent"
-                  />
+                  {adjustRows.map((row, idx) => (
+                    <div key={idx} className="space-y-1.5 pb-2 border-b border-border last:border-0 last:pb-0">
+                      <div className="flex gap-2 items-center">
+                        <input
+                          value={row.currency}
+                          onChange={(e) => setAdjustRow(idx, { currency: e.target.value })}
+                          placeholder="CCY"
+                          className="w-20 px-2 py-1.5 bg-bg-tertiary border border-border text-text-primary text-xs outline-none focus:border-accent uppercase"
+                        />
+                        <input
+                          type="number"
+                          step="any"
+                          value={row.amount}
+                          onChange={(e) => setAdjustRow(idx, { amount: e.target.value })}
+                          placeholder="Amount (+credit / -deduct)"
+                          className="flex-1 px-2 py-1.5 bg-bg-tertiary border border-border text-text-primary text-xs outline-none focus:border-accent font-mono"
+                        />
+                        {adjustRows.length > 1 && (
+                          <button
+                            onClick={() => removeAdjustRow(idx)}
+                            className="text-[10px] px-1.5 py-1 text-sell hover:bg-sell/10 transition-colors"
+                            aria-label="Remove row"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        value={row.reason}
+                        onChange={(e) => setAdjustRow(idx, { reason: e.target.value })}
+                        placeholder="Reason (required, logged to audit)"
+                        className="w-full px-2 py-1.5 bg-bg-tertiary border border-border text-text-primary text-xs outline-none focus:border-accent"
+                      />
+                    </div>
+                  ))}
                   <button
                     onClick={() => {
-                      const n = parseFloat(adjustAmount);
-                      if (!Number.isFinite(n) || n === 0) { error('Enter a non-zero amount'); return; }
-                      const verb = n > 0 ? 'credit' : 'deduct';
-                      if (confirm(`${verb.toUpperCase()} ${Math.abs(n)} ${adjustCurrency.toUpperCase()} to user ${user.email}? Reason: "${adjustReason.trim()}"`)) {
+                      const summary = adjustRows
+                        .filter((r) => r.amount && r.currency)
+                        .map((r) => {
+                          const n = parseFloat(r.amount);
+                          return `${n > 0 ? '+' : ''}${n} ${r.currency.toUpperCase()}`;
+                        })
+                        .join(', ');
+                      if (!summary) { error('Fill at least one row'); return; }
+                      if (confirm(`Apply to ${user.email}: ${summary}?`)) {
                         handleAdjustBalance();
                       }
                     }}
-                    disabled={adjustLoading || !adjustAmount || !adjustReason.trim()}
-                    className="px-4 py-2 bg-accent text-black text-xs font-semibold hover:bg-accent-hover transition-colors disabled:opacity-50"
+                    disabled={adjustLoading}
+                    className="w-full mt-2 px-4 py-2 bg-accent text-black text-xs font-semibold hover:bg-accent-hover transition-colors disabled:opacity-50"
                   >
-                    {adjustLoading ? 'Applying…' : 'Apply Adjustment'}
+                    {adjustLoading ? 'Applying…' : adjustRows.length === 1 ? 'Apply Adjustment' : `Apply ${adjustRows.length} Adjustments`}
                   </button>
                 </div>
               </div>
