@@ -157,6 +157,10 @@ export const api = {
     userOrders: (userId: number, page = 1, size = 10) =>
       get(`/admin/users/${userId}/orders${qs({ page, size })}`),
     userPositions: (userId: number) => get(`/admin/users/${userId}/positions`),
+    cancelUserOrder: (userId: number, orderId: number) =>
+      post(`/admin/users/${userId}/orders/${orderId}/cancel`),
+    closeUserPosition: (userId: number, positionId: number) =>
+      post(`/admin/users/${userId}/positions/${positionId}/close`),
     updateUser: (userId: number, data: { fullName?: string; role?: string }) =>
       put(`/admin/users/${userId}`, data),
     updateKYC: (userId: number, status: string) =>

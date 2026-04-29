@@ -6,7 +6,33 @@ import { api } from '@/lib/api';
 import { kycFileUrl } from '@/lib/kyc-files';
 import { useToast } from '@/components/ui/toast-provider';
 import { usePriceStore } from '@/stores/price-store';
-import type { Order, Position } from '@/types';
+import type { Order, Position, AuditLog, PageResponse } from '@/types';
+
+// ── CSV export helper ────────────────────────────────────────────────────────
+// Stays inline (not extracted) — single-call site, KISS. Escapes commas and
+// quotes inside cells per RFC4180 minimal rules.
+function downloadCSV(filename: string, rows: Record<string, unknown>[]) {
+  if (rows.length === 0) return;
+  const headers = Object.keys(rows[0]);
+  const escape = (v: unknown) => {
+    if (v === null || v === undefined) return '';
+    const s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = [
+    headers.join(','),
+    ...rows.map((r) => headers.map((h) => escape(r[h])).join(',')),
+  ].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
 interface AdminUser {
   id: number; email: string; fullName: string; role: string;
@@ -52,7 +78,7 @@ interface BonusEntry {
   promotionName?: string;
 }
 
-type DrawerTab = 'info' | 'wallets' | 'orders' | 'positions' | 'kyc' | 'bonuses';
+type DrawerTab = 'info' | 'wallets' | 'orders' | 'positions' | 'activity' | 'kyc' | 'bonuses';
 type PositionStatusFilter = 'ALL' | 'OPEN' | 'CLOSED' | 'LIQUIDATED';
 
 const KYC_COLOR: Record<string, string> = {
@@ -163,7 +189,14 @@ function UserDrawer({
   const [positions, setPositions] = useState<Position[]>([]);
   const [positionsLoading, setPositionsLoading] = useState(false);
   const [positionsFilter, setPositionsFilter] = useState<PositionStatusFilter>('ALL');
+  const [actionPending, setActionPending] = useState<string | null>(null);
   const tickers = usePriceStore((s) => s.tickers);
+
+  // Activity feed (audit log)
+  const [activity, setActivity] = useState<AuditLog[]>([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityPage, setActivityPage] = useState(1);
+  const [activityTotalPages, setActivityTotalPages] = useState(1);
 
   // Lock/Unlock state
   const [lockReason, setLockReason] = useState('');
@@ -258,7 +291,53 @@ function UserDrawer({
     const iv = setInterval(fetch, 3000);
     return () => { cancelled = true; clearInterval(iv); };
   }, [tab, user.id]);
+
+  // Activity feed: audit log scoped to this user.
+  useEffect(() => {
+    if (tab !== 'activity') return;
+    setActivityLoading(true);
+    api.admin.audit({ userId: user.id, page: activityPage, size: 30 }).then((res) => {
+      if (res.success && res.data) {
+        const page = res.data as PageResponse<AuditLog>;
+        setActivity(page.content ?? []);
+        setActivityTotalPages(page.totalPages ?? 1);
+      }
+      setActivityLoading(false);
+    });
+  }, [tab, user.id, activityPage]);
   /* eslint-enable react-hooks/set-state-in-effect */
+
+  async function handleCancelOrder(orderId: number) {
+    setActionPending(`order-${orderId}`);
+    const res = await api.admin.cancelUserOrder(user.id, orderId);
+    if (res.success) {
+      success('Order cancelled');
+      // Refresh order list
+      api.admin.userOrders(user.id, ordersPage, 20).then((r) => {
+        if (r.success && r.data) {
+          const page = r.data as { content?: Order[]; totalPages?: number };
+          setOrders(page.content ?? []);
+        }
+      });
+    } else {
+      error(res.message || 'Cancel failed');
+    }
+    setActionPending(null);
+  }
+
+  async function handleClosePosition(positionId: number) {
+    setActionPending(`position-${positionId}`);
+    const res = await api.admin.closeUserPosition(user.id, positionId);
+    if (res.success) {
+      success('Position force-closed');
+      api.admin.userPositions(user.id).then((r) => {
+        if (r.success && r.data) setPositions(r.data as Position[]);
+      });
+    } else {
+      error(res.message || 'Close failed');
+    }
+    setActionPending(null);
+  }
 
   // Live PnL: prefer ticker.price (WS-pushed) over the snapshot mark on
   // the position record. Falls back to position.markPrice if ticker not
@@ -341,6 +420,7 @@ function UserDrawer({
     { key: 'wallets', label: 'Wallets' },
     { key: 'orders', label: 'Orders' },
     { key: 'positions', label: 'Positions' },
+    { key: 'activity', label: 'Activity' },
     { key: 'kyc', label: 'KYC' },
     { key: 'bonuses', label: 'Bonuses' },
   ];
@@ -536,7 +616,16 @@ function UserDrawer({
           {/* ── ORDERS TAB (spot) ── */}
           {tab === 'orders' && (
             <div>
-              <div className="text-[10px] text-text-muted uppercase tracking-wider mb-2 font-semibold">Spot Orders</div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[10px] text-text-muted uppercase tracking-wider font-semibold">Spot Orders</div>
+                <button
+                  onClick={() => downloadCSV(`user-${user.id}-orders.csv`, orders as unknown as Record<string, unknown>[])}
+                  disabled={orders.length === 0}
+                  className="text-[10px] px-2 py-0.5 bg-bg-tertiary text-text-secondary border border-border hover:text-text-primary hover:border-accent transition-colors disabled:opacity-40"
+                >
+                  Export CSV
+                </button>
+              </div>
               {ordersLoading ? (
                 <div className="text-xs text-text-secondary py-6 text-center">Loading orders…</div>
               ) : orders.length === 0 ? (
@@ -555,32 +644,48 @@ function UserDrawer({
                           <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Amt</th>
                           <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Filled</th>
                           <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Status</th>
+                          <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Action</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {orders.map((o) => (
-                          <tr key={o.id} className="border-b border-border last:border-0">
-                            <td className="px-2 py-2 text-text-muted whitespace-nowrap">{new Date(o.createdAt).toLocaleString()}</td>
-                            <td className="px-2 py-2 text-text-primary font-semibold">{o.pair}</td>
-                            <td className={`px-2 py-2 font-semibold ${o.side === 'BUY' ? 'text-buy' : 'text-sell'}`}>{o.side}</td>
-                            <td className="px-2 py-2 text-text-secondary">{o.type}</td>
-                            <td className="px-2 py-2 text-right font-mono text-text-primary">
-                              {o.type === 'MARKET' ? '—' : o.price.toLocaleString(undefined, { maximumFractionDigits: 4 })}
-                            </td>
-                            <td className="px-2 py-2 text-right font-mono text-text-primary">
-                              {o.amount.toLocaleString(undefined, { maximumFractionDigits: 6 })}
-                            </td>
-                            <td className="px-2 py-2 text-right font-mono text-text-secondary">
-                              {o.filledAmount.toLocaleString(undefined, { maximumFractionDigits: 6 })}
-                            </td>
-                            <td className={`px-2 py-2 text-right font-semibold ${
-                              o.status === 'FILLED' ? 'text-buy'
-                              : o.status === 'CANCELLED' ? 'text-sell'
-                              : o.status === 'PARTIAL' ? 'text-accent'
-                              : 'text-text-secondary'
-                            }`}>{o.status}</td>
-                          </tr>
-                        ))}
+                        {orders.map((o) => {
+                          const cancellable = o.status === 'OPEN' || o.status === 'PARTIAL';
+                          const pending = actionPending === `order-${o.id}`;
+                          return (
+                            <tr key={o.id} className="border-b border-border last:border-0">
+                              <td className="px-2 py-2 text-text-muted whitespace-nowrap">{new Date(o.createdAt).toLocaleString()}</td>
+                              <td className="px-2 py-2 text-text-primary font-semibold">{o.pair}</td>
+                              <td className={`px-2 py-2 font-semibold ${o.side === 'BUY' ? 'text-buy' : 'text-sell'}`}>{o.side}</td>
+                              <td className="px-2 py-2 text-text-secondary">{o.type}</td>
+                              <td className="px-2 py-2 text-right font-mono text-text-primary">
+                                {o.type === 'MARKET' ? '—' : o.price.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                              </td>
+                              <td className="px-2 py-2 text-right font-mono text-text-primary">
+                                {o.amount.toLocaleString(undefined, { maximumFractionDigits: 6 })}
+                              </td>
+                              <td className="px-2 py-2 text-right font-mono text-text-secondary">
+                                {o.filledAmount.toLocaleString(undefined, { maximumFractionDigits: 6 })}
+                              </td>
+                              <td className={`px-2 py-2 text-right font-semibold ${
+                                o.status === 'FILLED' ? 'text-buy'
+                                : o.status === 'CANCELLED' ? 'text-sell'
+                                : o.status === 'PARTIAL' ? 'text-accent'
+                                : 'text-text-secondary'
+                              }`}>{o.status}</td>
+                              <td className="px-2 py-2 text-right">
+                                {cancellable && (
+                                  <button
+                                    onClick={() => handleCancelOrder(o.id)}
+                                    disabled={pending}
+                                    className="text-[10px] px-2 py-0.5 bg-sell/20 text-sell hover:bg-sell/30 disabled:opacity-50"
+                                  >
+                                    {pending ? '…' : 'Cancel'}
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -611,21 +716,30 @@ function UserDrawer({
                 </div>
               </div>
 
-              {/* Status filter */}
-              <div className="flex gap-1">
-                {(['ALL', 'OPEN', 'CLOSED', 'LIQUIDATED'] as PositionStatusFilter[]).map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => setPositionsFilter(s)}
-                    className={`px-2 py-1 text-[10px] font-semibold transition-colors ${
-                      positionsFilter === s
-                        ? 'bg-accent text-black'
-                        : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'
-                    }`}
-                  >
-                    {s}
-                  </button>
-                ))}
+              {/* Status filter + CSV export */}
+              <div className="flex gap-1 items-center justify-between">
+                <div className="flex gap-1">
+                  {(['ALL', 'OPEN', 'CLOSED', 'LIQUIDATED'] as PositionStatusFilter[]).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setPositionsFilter(s)}
+                      className={`px-2 py-1 text-[10px] font-semibold transition-colors ${
+                        positionsFilter === s
+                          ? 'bg-accent text-black'
+                          : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'
+                      }`}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={() => downloadCSV(`user-${user.id}-positions.csv`, filteredPositions as unknown as Record<string, unknown>[])}
+                  disabled={filteredPositions.length === 0}
+                  className="text-[10px] px-2 py-0.5 bg-bg-tertiary text-text-secondary border border-border hover:text-text-primary hover:border-accent transition-colors disabled:opacity-40"
+                >
+                  Export CSV
+                </button>
               </div>
 
               {positionsLoading && positions.length === 0 ? (
@@ -647,42 +761,109 @@ function UserDrawer({
                         <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">PnL</th>
                         <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">ROE%</th>
                         <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Status</th>
+                        <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Action</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredPositions.map((p) => (
-                        <tr key={p.id} className="border-b border-border last:border-0">
-                          <td className="px-2 py-2 text-text-muted whitespace-nowrap">
-                            {new Date(p.createdAt).toLocaleString()}
-                          </td>
-                          <td className="px-2 py-2 text-text-primary font-semibold">{p.pair}</td>
-                          <td className={`px-2 py-2 font-semibold ${p.side === 'LONG' ? 'text-buy' : 'text-sell'}`}>{p.side}</td>
-                          <td className="px-2 py-2 text-right text-text-secondary">{p.leverage}x</td>
-                          <td className="px-2 py-2 text-right font-mono text-text-primary">
-                            {p.size.toLocaleString(undefined, { maximumFractionDigits: 6 })}
-                          </td>
-                          <td className="px-2 py-2 text-right font-mono text-text-secondary">
-                            {p.entryPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}
-                          </td>
-                          <td className="px-2 py-2 text-right font-mono text-text-secondary">
-                            {p._liveMark.toLocaleString(undefined, { maximumFractionDigits: 4 })}
-                          </td>
-                          <td className={`px-2 py-2 text-right font-mono font-semibold ${p._livePnl >= 0 ? 'text-buy' : 'text-sell'}`}>
-                            {p._livePnl >= 0 ? '+' : ''}${p._livePnl.toFixed(2)}
-                          </td>
-                          <td className={`px-2 py-2 text-right font-mono ${p._roe >= 0 ? 'text-buy' : 'text-sell'}`}>
-                            {p._roe >= 0 ? '+' : ''}{p._roe.toFixed(2)}%
-                          </td>
-                          <td className={`px-2 py-2 text-right font-semibold ${
-                            p.status === 'OPEN' ? 'text-accent'
-                            : p.status === 'CLOSED' ? 'text-buy'
-                            : 'text-sell'
-                          }`}>{p.status}</td>
-                        </tr>
-                      ))}
+                      {filteredPositions.map((p) => {
+                        const closable = p.status === 'OPEN';
+                        const pending = actionPending === `position-${p.id}`;
+                        return (
+                          <tr key={p.id} className="border-b border-border last:border-0">
+                            <td className="px-2 py-2 text-text-muted whitespace-nowrap">
+                              {new Date(p.createdAt).toLocaleString()}
+                            </td>
+                            <td className="px-2 py-2 text-text-primary font-semibold">{p.pair}</td>
+                            <td className={`px-2 py-2 font-semibold ${p.side === 'LONG' ? 'text-buy' : 'text-sell'}`}>{p.side}</td>
+                            <td className="px-2 py-2 text-right text-text-secondary">{p.leverage}x</td>
+                            <td className="px-2 py-2 text-right font-mono text-text-primary">
+                              {p.size.toLocaleString(undefined, { maximumFractionDigits: 6 })}
+                            </td>
+                            <td className="px-2 py-2 text-right font-mono text-text-secondary">
+                              {p.entryPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                            </td>
+                            <td className="px-2 py-2 text-right font-mono text-text-secondary">
+                              {p._liveMark.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                            </td>
+                            <td className={`px-2 py-2 text-right font-mono font-semibold ${p._livePnl >= 0 ? 'text-buy' : 'text-sell'}`}>
+                              {p._livePnl >= 0 ? '+' : ''}${p._livePnl.toFixed(2)}
+                            </td>
+                            <td className={`px-2 py-2 text-right font-mono ${p._roe >= 0 ? 'text-buy' : 'text-sell'}`}>
+                              {p._roe >= 0 ? '+' : ''}{p._roe.toFixed(2)}%
+                            </td>
+                            <td className={`px-2 py-2 text-right font-semibold ${
+                              p.status === 'OPEN' ? 'text-accent'
+                              : p.status === 'CLOSED' ? 'text-buy'
+                              : 'text-sell'
+                            }`}>{p.status}</td>
+                            <td className="px-2 py-2 text-right">
+                              {closable && (
+                                <button
+                                  onClick={() => {
+                                    if (confirm(`Force-close ${p.side} ${p.pair}? This will settle PnL on the user's wallet.`)) {
+                                      handleClosePosition(p.id);
+                                    }
+                                  }}
+                                  disabled={pending}
+                                  className="text-[10px] px-2 py-0.5 bg-sell/20 text-sell hover:bg-sell/30 disabled:opacity-50"
+                                >
+                                  {pending ? '…' : 'Force Close'}
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
+              )}
+            </div>
+          )}
+
+          {/* ── ACTIVITY TAB (audit log) ── */}
+          {tab === 'activity' && (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-[10px] text-text-muted uppercase tracking-wider font-semibold">Activity Feed</div>
+                <button
+                  onClick={() => downloadCSV(`user-${user.id}-activity.csv`, activity as unknown as Record<string, unknown>[])}
+                  disabled={activity.length === 0}
+                  className="text-[10px] px-2 py-0.5 bg-bg-tertiary text-text-secondary border border-border hover:text-text-primary hover:border-accent transition-colors disabled:opacity-40"
+                >
+                  Export CSV
+                </button>
+              </div>
+              {activityLoading ? (
+                <div className="text-xs text-text-secondary py-6 text-center">Loading activity…</div>
+              ) : activity.length === 0 ? (
+                <div className="text-xs text-text-secondary py-6 text-center">No activity recorded</div>
+              ) : (
+                <>
+                  <div className="bg-bg-secondary border border-border divide-y divide-border">
+                    {activity.map((a) => (
+                      <div key={a.id} className="px-3 py-2 hover:bg-bg-hover transition-colors">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-mono text-text-primary">{a.action}</span>
+                          <span className={`text-[10px] font-semibold px-1.5 py-0.5 ${
+                            a.outcome === 'success' ? 'bg-buy/20 text-buy' : 'bg-sell/20 text-sell'
+                          }`}>{a.outcome}</span>
+                        </div>
+                        <div className="flex items-center justify-between mt-1">
+                          <span className="text-[10px] text-text-muted">{new Date(a.createdAt).toLocaleString()}</span>
+                          <span className="text-[10px] text-text-muted font-mono">{a.ip || '—'}</span>
+                        </div>
+                        {a.detail && (
+                          <div className="text-[10px] text-text-secondary mt-1 break-all">{a.detail}</div>
+                        )}
+                        {a.newDevice && (
+                          <span className="text-[9px] text-accent uppercase tracking-wider mt-1 inline-block">New device</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <Pagination page={activityPage} totalPages={activityTotalPages} onChange={setActivityPage} />
+                </>
               )}
             </div>
           )}
