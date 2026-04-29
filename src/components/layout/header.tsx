@@ -82,7 +82,10 @@ export function Header() {
       api.wallet.balances().then((res) => {
         if (res.data) {
           const usdt = res.data.find((w) => w.currency === 'USDT');
-          setUsdtBalance(usdt?.balance ?? 0);
+          // Show total USDT equity (available + locked-as-collateral) so the
+          // header pill stays stable when the user opens a futures position —
+          // margin moves from `balance` to `lockedBalance`, total unchanged.
+          setUsdtBalance((usdt?.balance ?? 0) + (usdt?.lockedBalance ?? 0));
         }
       });
       api.futures.openPositions().then((res) => {
