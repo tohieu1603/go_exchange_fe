@@ -1,10 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { X } from 'lucide-react';
 import { api } from '@/lib/api';
 import { kycFileUrl } from '@/lib/kyc-files';
 import { useToast } from '@/components/ui/toast-provider';
+import { usePriceStore } from '@/stores/price-store';
+import type { Order, Position } from '@/types';
 
 interface AdminUser {
   id: number; email: string; fullName: string; role: string;
@@ -50,7 +52,8 @@ interface BonusEntry {
   promotionName?: string;
 }
 
-type DrawerTab = 'info' | 'wallets' | 'kyc' | 'bonuses';
+type DrawerTab = 'info' | 'wallets' | 'orders' | 'positions' | 'kyc' | 'bonuses';
+type PositionStatusFilter = 'ALL' | 'OPEN' | 'CLOSED' | 'LIQUIDATED';
 
 const KYC_COLOR: Record<string, string> = {
   VERIFIED: 'text-buy',
@@ -150,6 +153,18 @@ function UserDrawer({
   const [kycLoading, setKycLoading] = useState(false);
   const [bonusesLoading, setBonusesLoading] = useState(false);
 
+  // Orders (spot) — paginated
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersPage, setOrdersPage] = useState(1);
+  const [ordersTotalPages, setOrdersTotalPages] = useState(1);
+
+  // Positions (futures) — live PnL via ticker store
+  const [positions, setPositions] = useState<Position[]>([]);
+  const [positionsLoading, setPositionsLoading] = useState(false);
+  const [positionsFilter, setPositionsFilter] = useState<PositionStatusFilter>('ALL');
+  const tickers = usePriceStore((s) => s.tickers);
+
   // Lock/Unlock state
   const [lockReason, setLockReason] = useState('');
   const [lockLoading, setLockLoading] = useState(false);
@@ -210,7 +225,66 @@ function UserDrawer({
       });
     }
   }, [tab, user.id]);
+
+  // Orders: refetch on tab/page change. Server already paginates.
+  useEffect(() => {
+    if (tab !== 'orders') return;
+    setOrdersLoading(true);
+    api.admin.userOrders(user.id, ordersPage, 20).then((res) => {
+      if (res.success && res.data) {
+        const page = res.data as { content?: Order[]; totalPages?: number };
+        setOrders(page.content ?? []);
+        setOrdersTotalPages(page.totalPages ?? 1);
+      }
+      setOrdersLoading(false);
+    });
+  }, [tab, user.id, ordersPage]);
+
+  // Positions: poll every 3s while tab is open so newly-opened/closed
+  // positions and DB-side mark price stay fresh. Live uPnL still
+  // computed client-side from ticker store on every render.
+  useEffect(() => {
+    if (tab !== 'positions') return;
+    let cancelled = false;
+    const fetch = () => {
+      api.admin.userPositions(user.id).then((res) => {
+        if (cancelled) return;
+        if (res.success && res.data) setPositions(res.data as Position[]);
+        setPositionsLoading(false);
+      });
+    };
+    setPositionsLoading(true);
+    fetch();
+    const iv = setInterval(fetch, 3000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [tab, user.id]);
   /* eslint-enable react-hooks/set-state-in-effect */
+
+  // Live PnL: prefer ticker.price (WS-pushed) over the snapshot mark on
+  // the position record. Falls back to position.markPrice if ticker not
+  // loaded yet for that pair.
+  const livePositions = useMemo(() => {
+    return positions.map((p) => {
+      const t = Object.values(tickers).find((tk) => tk.pair === p.pair);
+      const live = t?.price ?? p.markPrice;
+      const livePnl = p.status === 'OPEN'
+        ? (p.side === 'LONG' ? p.size * (live - p.entryPrice) : p.size * (p.entryPrice - live))
+        : p.unrealizedPnl;
+      const roe = p.margin > 0 ? (livePnl / p.margin) * 100 : 0;
+      return { ...p, _liveMark: live, _livePnl: livePnl, _roe: roe };
+    });
+  }, [positions, tickers]);
+
+  const filteredPositions = positionsFilter === 'ALL'
+    ? livePositions
+    : livePositions.filter((p) => p.status === positionsFilter);
+
+  const positionsSummary = useMemo(() => {
+    const open = livePositions.filter((p) => p.status === 'OPEN');
+    const totalUPnl = open.reduce((s, p) => s + p._livePnl, 0);
+    const totalMargin = open.reduce((s, p) => s + p.margin, 0);
+    return { openCount: open.length, totalUPnl, totalMargin };
+  }, [livePositions]);
 
   async function handleLockToggle() {
     setLockLoading(true);
@@ -265,6 +339,8 @@ function UserDrawer({
   const tabs: { key: DrawerTab; label: string }[] = [
     { key: 'info', label: 'Info' },
     { key: 'wallets', label: 'Wallets' },
+    { key: 'orders', label: 'Orders' },
+    { key: 'positions', label: 'Positions' },
     { key: 'kyc', label: 'KYC' },
     { key: 'bonuses', label: 'Bonuses' },
   ];
@@ -452,6 +528,160 @@ function UserDrawer({
                       </span>
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── ORDERS TAB (spot) ── */}
+          {tab === 'orders' && (
+            <div>
+              <div className="text-[10px] text-text-muted uppercase tracking-wider mb-2 font-semibold">Spot Orders</div>
+              {ordersLoading ? (
+                <div className="text-xs text-text-secondary py-6 text-center">Loading orders…</div>
+              ) : orders.length === 0 ? (
+                <div className="text-xs text-text-secondary py-6 text-center">No orders found</div>
+              ) : (
+                <>
+                  <div className="bg-bg-secondary border border-border overflow-x-auto">
+                    <table className="w-full text-[11px]">
+                      <thead>
+                        <tr className="border-b border-border">
+                          <th className="text-left px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Time</th>
+                          <th className="text-left px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Pair</th>
+                          <th className="text-left px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Side</th>
+                          <th className="text-left px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Type</th>
+                          <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Price</th>
+                          <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Amt</th>
+                          <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Filled</th>
+                          <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {orders.map((o) => (
+                          <tr key={o.id} className="border-b border-border last:border-0">
+                            <td className="px-2 py-2 text-text-muted whitespace-nowrap">{new Date(o.createdAt).toLocaleString()}</td>
+                            <td className="px-2 py-2 text-text-primary font-semibold">{o.pair}</td>
+                            <td className={`px-2 py-2 font-semibold ${o.side === 'BUY' ? 'text-buy' : 'text-sell'}`}>{o.side}</td>
+                            <td className="px-2 py-2 text-text-secondary">{o.type}</td>
+                            <td className="px-2 py-2 text-right font-mono text-text-primary">
+                              {o.type === 'MARKET' ? '—' : o.price.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                            </td>
+                            <td className="px-2 py-2 text-right font-mono text-text-primary">
+                              {o.amount.toLocaleString(undefined, { maximumFractionDigits: 6 })}
+                            </td>
+                            <td className="px-2 py-2 text-right font-mono text-text-secondary">
+                              {o.filledAmount.toLocaleString(undefined, { maximumFractionDigits: 6 })}
+                            </td>
+                            <td className={`px-2 py-2 text-right font-semibold ${
+                              o.status === 'FILLED' ? 'text-buy'
+                              : o.status === 'CANCELLED' ? 'text-sell'
+                              : o.status === 'PARTIAL' ? 'text-accent'
+                              : 'text-text-secondary'
+                            }`}>{o.status}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <Pagination page={ordersPage} totalPages={ordersTotalPages} onChange={setOrdersPage} />
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ── POSITIONS TAB (futures) ── */}
+          {tab === 'positions' && (
+            <div className="space-y-3">
+              {/* Live summary */}
+              <div className="grid grid-cols-3 gap-2">
+                <div className="bg-bg-secondary border border-border px-3 py-2">
+                  <div className="text-[9px] text-text-muted uppercase tracking-wider">Open</div>
+                  <div className="text-sm font-semibold text-text-primary mt-0.5">{positionsSummary.openCount}</div>
+                </div>
+                <div className="bg-bg-secondary border border-border px-3 py-2">
+                  <div className="text-[9px] text-text-muted uppercase tracking-wider">Margin Used</div>
+                  <div className="text-sm font-mono text-text-primary mt-0.5">${positionsSummary.totalMargin.toFixed(2)}</div>
+                </div>
+                <div className="bg-bg-secondary border border-border px-3 py-2">
+                  <div className="text-[9px] text-text-muted uppercase tracking-wider">Live uPnL</div>
+                  <div className={`text-sm font-mono font-semibold mt-0.5 ${positionsSummary.totalUPnl >= 0 ? 'text-buy' : 'text-sell'}`}>
+                    {positionsSummary.totalUPnl >= 0 ? '+' : ''}${positionsSummary.totalUPnl.toFixed(2)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Status filter */}
+              <div className="flex gap-1">
+                {(['ALL', 'OPEN', 'CLOSED', 'LIQUIDATED'] as PositionStatusFilter[]).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setPositionsFilter(s)}
+                    className={`px-2 py-1 text-[10px] font-semibold transition-colors ${
+                      positionsFilter === s
+                        ? 'bg-accent text-black'
+                        : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+
+              {positionsLoading && positions.length === 0 ? (
+                <div className="text-xs text-text-secondary py-6 text-center">Loading positions…</div>
+              ) : filteredPositions.length === 0 ? (
+                <div className="text-xs text-text-secondary py-6 text-center">No positions</div>
+              ) : (
+                <div className="bg-bg-secondary border border-border overflow-x-auto">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="border-b border-border">
+                        <th className="text-left px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Time</th>
+                        <th className="text-left px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Pair</th>
+                        <th className="text-left px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Side</th>
+                        <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Lev</th>
+                        <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Size</th>
+                        <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Entry</th>
+                        <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Mark</th>
+                        <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">PnL</th>
+                        <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">ROE%</th>
+                        <th className="text-right px-2 py-2 text-[10px] text-text-muted font-semibold uppercase">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredPositions.map((p) => (
+                        <tr key={p.id} className="border-b border-border last:border-0">
+                          <td className="px-2 py-2 text-text-muted whitespace-nowrap">
+                            {new Date(p.createdAt).toLocaleString()}
+                          </td>
+                          <td className="px-2 py-2 text-text-primary font-semibold">{p.pair}</td>
+                          <td className={`px-2 py-2 font-semibold ${p.side === 'LONG' ? 'text-buy' : 'text-sell'}`}>{p.side}</td>
+                          <td className="px-2 py-2 text-right text-text-secondary">{p.leverage}x</td>
+                          <td className="px-2 py-2 text-right font-mono text-text-primary">
+                            {p.size.toLocaleString(undefined, { maximumFractionDigits: 6 })}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono text-text-secondary">
+                            {p.entryPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                          </td>
+                          <td className="px-2 py-2 text-right font-mono text-text-secondary">
+                            {p._liveMark.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                          </td>
+                          <td className={`px-2 py-2 text-right font-mono font-semibold ${p._livePnl >= 0 ? 'text-buy' : 'text-sell'}`}>
+                            {p._livePnl >= 0 ? '+' : ''}${p._livePnl.toFixed(2)}
+                          </td>
+                          <td className={`px-2 py-2 text-right font-mono ${p._roe >= 0 ? 'text-buy' : 'text-sell'}`}>
+                            {p._roe >= 0 ? '+' : ''}{p._roe.toFixed(2)}%
+                          </td>
+                          <td className={`px-2 py-2 text-right font-semibold ${
+                            p.status === 'OPEN' ? 'text-accent'
+                            : p.status === 'CLOSED' ? 'text-buy'
+                            : 'text-sell'
+                          }`}>{p.status}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
