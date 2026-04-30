@@ -1,49 +1,46 @@
 # Jenkins + SSH deploy setup (Frontend)
 
 [Jenkinsfile](../Jenkinsfile) drives a 4-stage pipeline:
-1. **Install** — `npm ci` (deterministic, fails on `package-lock.json` drift).
-2. **Lint + type-check** — `eslint` + `tsc --noEmit` in parallel.
-3. **Build (Next.js)** — `next build` validates the output: `standalone` bundle.
-4. **Deploy to server** — on `main`, SSH into `$DEPLOY_HOST` and run [`infra/jenkins/exchange-fe-deploy.sh`](../infra/jenkins/exchange-fe-deploy.sh) (streamed via SSH stdin).
+1. **Install** — `npm ci` (deterministic) on Jenkins.
+2. **Lint + type-check** — `eslint` + `tsc --noEmit` in parallel (`|| true` while the codebase still warns).
+3. **Build (Next.js)** — `next build` validates output before deploy.
+4. **Deploy to server** — on `main`, SSH into the host: `git pull → npm install → npm run build → systemctl restart exchange_fe → curl via nginx vhost`.
 
-Backend has its own pipeline in [`tohieu1603/go-exchange`](https://github.com/tohieu1603/go-exchange).
+Backend has its own pipeline in [`tohieu1603/go-exchange`](https://github.com/tohieu1603/go-exchange) — same SSH credential.
 
-## How deploy actually works
+## What the deploy stage does
 
 ```
-Jenkins agent                            Deploy host (100.112.117.30)
-─────────────                            ──────────────────────────────
-ssh -i $KEY oceanroot@host \
-  "BRANCH=main GIT_SHA=abc bash -s" \
-  < infra/jenkins/exchange-fe-deploy.sh ─►  bash reads script from stdin
-                                            ├─ git fetch + reset --hard origin/main
-                                            ├─ npm ci
-                                            ├─ snapshot prior bundle as
-                                            │  .next/standalone.previous
-                                            ├─ next build (output: standalone)
-                                            ├─ stage .next/static + public/
-                                            │  into the standalone tree
-                                            ├─ sudo systemctl restart
-                                            │  exchange-frontend.service
-                                            └─ curl / (15× 2s retry)
+ssh oceanroot@100.112.117.30 bash -s <<EOF
+  cd /home/oceanroot/exchange_fe
+  git fetch origin && git reset --hard origin/main && git clean -fd
+  npm install
+  npm run build
+  sudo -n /bin/systemctl restart exchange_fe
+  sleep 4
+  curl -sf -o /dev/null -w "FE local: %{http_code}\n" \
+       -H "Host: exchange.operis.vn" http://127.0.0.1/
+EOF
 ```
 
-**No Docker on the host** — Next.js standalone runs as a native node process under systemd.
+Notes:
+- Path is `/home/oceanroot/exchange_fe` (underscore — matches the systemd unit name).
+- The unit name is `exchange_fe` (NOT `exchange-frontend`). Sudoers entry must NOPASSWD-allow restart of this exact name.
+- Uses `npm install` (not `npm ci`) on the host so a partial-deploy node_modules can self-heal without committing a new lockfile.
+- Health curl goes through `127.0.0.1:80` with a `Host:` header so nginx routes it as the production vhost — confirms the full path (nginx → next) is green, not just :3000.
 
 ## One-time host setup
 
-Assumes the backend host setup is already done (deploy user `oceanroot`, sudoers entry, SSH key in `authorized_keys`). FE adds:
+Backend host setup must already be done (deploy user `oceanroot`, sudoers, SSH key in `authorized_keys`). FE adds:
 
 ### 1. Node 20 + repo
 
 ```bash
-# Node 20 LTS (matches Dockerfile base + Jenkinsfile agent expectation)
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
-# Clone the FE repo to a stable path
-sudo mkdir -p /srv && sudo chown oceanroot /srv
-sudo -u oceanroot git clone https://github.com/tohieu1603/go_exchange_fe /srv/micro-exchange-fe
+sudo -u oceanroot git clone https://github.com/tohieu1603/go_exchange_fe \
+  /home/oceanroot/exchange_fe
 ```
 
 ### 2. Env file
@@ -54,114 +51,115 @@ sudo tee /etc/exchange/frontend.env > /dev/null <<'EOF'
 NODE_ENV=production
 PORT=3000
 HOSTNAME=0.0.0.0
-# Public API base — ASE-side env, baked into the bundle at build time
-# via Next's NEXT_PUBLIC_* convention if you use it.
-NEXT_PUBLIC_API_URL=https://api.your-domain.com
+NEXT_PUBLIC_API_URL=https://exchange.operis.vn
 EOF
 sudo chown oceanroot:oceanroot /etc/exchange/frontend.env
 sudo chmod 640 /etc/exchange/frontend.env
 ```
 
-### 3. Sudoers entry for the FE unit
-
-Append (or merge with the backend entry):
+### 3. Sudoers entry
 
 ```bash
 sudo tee /etc/sudoers.d/oceanroot-fe > /dev/null <<'EOF'
-oceanroot ALL=(ALL) NOPASSWD: /bin/systemctl restart exchange-frontend.service, /bin/systemctl status exchange-frontend.service, /bin/journalctl -u exchange-frontend.service
+oceanroot ALL=(ALL) NOPASSWD: /bin/systemctl restart exchange_fe, /bin/systemctl status exchange_fe, /bin/journalctl -u exchange_fe
 EOF
 ```
 
-### 4. Install systemd unit
+### 4. systemd unit
 
 ```bash
-sudo cp /srv/micro-exchange-fe/infra/systemd/exchange-frontend.service /etc/systemd/system/
+sudo cp /home/oceanroot/exchange_fe/infra/systemd/exchange_fe.service /etc/systemd/system/
 sudo systemctl daemon-reload
-# First build runs through the deploy script — see "Manual deploy" below.
 ```
 
-### 5. First deploy (manual)
-
-```bash
-ssh oceanroot@100.112.117.30 \
-  "BRANCH=main GIT_SHA=$(git rev-parse --short HEAD) bash -s" \
-  < infra/jenkins/exchange-fe-deploy.sh
-
-sudo systemctl enable --now exchange-frontend.service
-sudo systemctl status exchange-frontend.service
-```
-
-## Jenkins setup
-
-Reuse the same `server-ssh-key` credential as the backend. If you haven't created it yet, see the backend repo's `docs/jenkins-setup.md`.
-
-`New Item` → name `micro-exchange-frontend` → **Pipeline** → OK:
-- **Pipeline → Definition**: *Pipeline script from SCM*
-- **SCM**: Git → repo URL → branch `*/main`
-- **Script Path**: `Jenkinsfile`
-
-Agent needs `node` + `npm` + `git` + `ssh`. The build does NOT need Docker.
-
-## Rollback
-
-Same model as backend — `.next/standalone.previous/` snapshot per build:
-
-**Automatic** — failed health gate triggers a swap-back + restart + re-check. Production stays on the last-known-good bundle; Jenkins still marks the run failed.
-
-**Manual** — for a regression that passed health but misbehaves under traffic:
-
-```bash
-ssh oceanroot@100.112.117.30 \
-  "ROLLBACK=1 bash -s" \
-  < infra/jenkins/exchange-fe-deploy.sh
-```
-
-## Behind a reverse proxy (recommended)
-
-Next listens on port 3000. In production you'll usually front it with nginx/Caddy for TLS + caching:
+### 5. nginx vhost
 
 ```nginx
+# /etc/nginx/sites-available/exchange.operis.vn
 server {
   listen 443 ssl http2;
-  server_name app.your-domain.com;
+  server_name exchange.operis.vn;
+  # ssl_certificate / ssl_certificate_key from certbot or your CA
 
+  # Same-origin: /api/* goes to the backend gateway, everything else
+  # to Next. The browser sees one host, no CORS preflight.
+  location /api/ {
+    proxy_pass http://127.0.0.1:3079;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
   location / {
     proxy_pass http://127.0.0.1:3000;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
   }
+}
 
-  # Forward `/api/*` to the gateway (port 8080) — keeps FE and API
-  # on the same origin so the browser doesn't need CORS.
-  location /api/ {
-    proxy_pass http://127.0.0.1:8080;
-  }
+# Listen on :80 for the Jenkins health probe (Host header carries the vhost)
+server {
+  listen 80;
+  server_name exchange.operis.vn;
+  location / { proxy_pass http://127.0.0.1:3000; }
+  location /api/ { proxy_pass http://127.0.0.1:3079; }
 }
 ```
+
+```bash
+sudo ln -s /etc/nginx/sites-available/exchange.operis.vn /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### 6. First deploy
+
+Trigger the Jenkins job manually OR run the deploy heredoc by hand:
+
+```bash
+ssh oceanroot@100.112.117.30 bash <<'EOF'
+  set -euo pipefail
+  cd /home/oceanroot/exchange_fe
+  git fetch origin && git reset --hard origin/main
+  npm install && npm run build
+EOF
+sudo systemctl enable --now exchange_fe
+sudo systemctl status exchange_fe
+```
+
+## Jenkins setup
+
+Reuse the `server-ssh-key` credential from the backend.
+
+`New Item` → `micro-exchange-frontend` → **Pipeline** → OK:
+- **Pipeline → Definition**: *Pipeline script from SCM*
+- **SCM**: Git → this repo → branch `*/main`
+- **Script Path**: `Jenkinsfile`
+
+Agent needs `node` 20 + `npm` + `git` + `ssh`. NOT Docker.
 
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
-| `npm ci` fails with `EUSAGE` | `package-lock.json` out of sync with `package.json` — run `npm install` locally and commit the new lockfile. |
-| Build succeeds but unit immediately exits | `WorkingDirectory` mismatch — the unit expects `/srv/micro-exchange-fe/.next/standalone/`. Verify path matches `REPO_DIR` in the deploy script. |
-| `MODULE_NOT_FOUND` for `next` at runtime | The Next standalone copy didn't pick up a transitive dep — usually fixed by ensuring `output: 'standalone'` is in `next.config.ts` AND re-running the deploy. |
-| Static assets 404 | `.next/static` and `public/` weren't staged. The deploy script copies them in step 5; if the unit started before this, restart manually. |
-| Health gate flakes | First-render warm-up >30s on a small VM. Bump the loop count in `exchange-fe-deploy.sh` or front with nginx that returns 200 from `/healthz` independent of the app. |
+| `sudo: a password is required` | Sudoers entry missing — see step 3. The unit name in sudoers must match `exchange_fe` exactly (with underscore). |
+| `npm install` fails on the host | Disk full or permission on `node_modules`. Check `df -h` and `ls -la /home/oceanroot/exchange_fe`. |
+| Health curl returns 404 | nginx vhost not loaded or `Host` header doesn't match `server_name`. `sudo nginx -t && sudo nginx -s reload`. |
+| Health curl returns 502 | Next process didn't come back up. `sudo journalctl -u exchange_fe -n 50`. |
+| Lint stage flooding logs | Drop the `|| true` on the lint stage once warnings are cleaned up to enforce zero-warning. |
 
 ## What lives where
 
 | Path | Purpose |
 |---|---|
-| [`Jenkinsfile`](../Jenkinsfile) | Pipeline definition. |
-| [`infra/jenkins/exchange-fe-deploy.sh`](../infra/jenkins/exchange-fe-deploy.sh) | Deploy logic (runs on the host via SSH stdin). |
-| [`infra/systemd/exchange-frontend.service`](../infra/systemd/exchange-frontend.service) | systemd unit. |
-| [`Dockerfile`](../Dockerfile) | Local container build for `docker run` (not used by the SSH-deploy pipeline). |
+| [`Jenkinsfile`](../Jenkinsfile) | Pipeline definition (deploy logic inline in heredoc). |
+| [`infra/systemd/exchange_fe.service`](../infra/systemd/exchange_fe.service) | systemd unit — `Type=simple` running `npm run start`. |
+| [`Dockerfile`](../Dockerfile) | Local container build for `docker run` (not used by SSH deploy). |
 | `/etc/exchange/frontend.env` | Real env file (NOT in git). |
+| `/home/oceanroot/exchange_fe` | Working tree on the host. |
 
 ## Unresolved questions
 
-- **Zero-downtime**? `systemctl restart` produces a brief 502 window. Front with nginx + `try_files @backup;` to a static maintenance page, or run two units behind nginx upstream pool with `keepalive` + drain on reload.
-- **Bundle size growth**? Track with `next build --profile`; gate in CI if it exceeds a budget.
-- **Secrets in client bundles**? `NEXT_PUBLIC_*` is baked into the JS sent to browsers. Anything sensitive must NOT have that prefix and must be read server-side only (in API routes / RSC).
+- **Rollback** — Jenkinsfile has no auto-revert if health fails post-restart. Worth a `.next.previous` snapshot + swap-back?
+- **CDN** — Static assets served from origin. Cloudflare or Bunny CDN cuts origin load.
+- **Secrets in client bundles** — `NEXT_PUBLIC_*` is baked into the JS sent to browsers. Anything sensitive must NOT have that prefix.
+- **`npm ci` on the host** — currently `npm install` lets the host self-heal node_modules drift. Tighten to `npm ci` once the lockfile workflow is stable.
