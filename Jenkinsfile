@@ -1,27 +1,25 @@
-// Frontend CI/CD pipeline. Lints + type-checks + builds Next.js, then on
-// `main` builds and pushes a Docker image to Docker Hub.
+// Frontend CI/CD pipeline — Micro-Exchange (Next.js).
+//
+// On every push:
+//   1. npm ci   (deterministic install).
+//   2. lint + tsc --noEmit + next build (parallel where independent).
+//
+// On `main` only:
+//   3. SSH into the deploy host, run infra/jenkins/exchange-fe-deploy.sh
+//      (streamed via SSH stdin so the script is version-controlled in
+//      this repo, not on the Jenkins server).
 //
 // Required Jenkins credentials:
-//   - dockerhub-credentials: Username/password (or PAT) for Docker Hub.
-//
-// Pipeline params:
-//   - DOCKERHUB_USER (default tohieu16)
-//   - IMAGE_NAME (default micro-exchange-frontend)
+//   - server-ssh-key  : SSH Username with private key for the deploy
+//                       user on $DEPLOY_HOST. Reuses the same credential
+//                       ID the backend pipeline uses.
 //
 // Wire-up:
-//   1. New Pipeline job → SCM = this repo → Script Path = Jenkinsfile
-//   2. Use the same dockerhub-credentials ID as the backend repo.
-//   3. Agent needs node 20 + docker (or use a docker agent).
+//   1. New Item → Pipeline → SCM = this repo → Script Path = Jenkinsfile.
+//   2. Agent needs node 20 + npm. Build does NOT need docker.
 
 pipeline {
   agent any
-
-  parameters {
-    string(name: 'DOCKERHUB_USER', defaultValue: 'tohieu16',
-           description: 'Docker Hub user/org for image tag')
-    string(name: 'IMAGE_NAME', defaultValue: 'micro-exchange-frontend',
-           description: 'Docker image name (without user prefix)')
-  }
 
   options {
     timestamps()
@@ -31,16 +29,23 @@ pipeline {
   }
 
   environment {
-    GIT_SHA = "${env.GIT_COMMIT?.take(7) ?: 'dev'}"
+    GIT_SHA     = "${env.GIT_COMMIT?.take(7) ?: 'dev'}"
+    DEPLOY_HOST = '100.112.117.30'
+    DEPLOY_USER = 'oceanroot'
+    BRANCH_NAME = "${env.BRANCH_NAME ?: 'main'}"
   }
 
   stages {
     stage('Install') {
+      // npm ci is the deterministic install — fails the build if
+      // package-lock.json drifted from package.json instead of silently
+      // upgrading like `npm install` would.
       steps { sh 'npm ci --no-audit --no-fund' }
     }
 
     stage('Lint + type-check') {
-      // Parallel — both fast, independent. Failure in either fails the build.
+      // Both run against the same node_modules from the Install stage.
+      // Run in parallel — eslint and tsc are CPU-independent.
       parallel {
         stage('eslint') { steps { sh 'npm run lint' } }
         stage('tsc')    { steps { sh 'npx tsc --noEmit' } }
@@ -48,10 +53,13 @@ pipeline {
     }
 
     stage('Build (Next.js)') {
+      // `output: standalone` in next.config.ts produces .next/standalone/
+      // which is what the systemd unit on the host actually runs.
+      // Validating the build here means a broken build never reaches prod.
       steps { sh 'npm run build' }
     }
 
-    stage('Build + push Docker image') {
+    stage('Deploy to server') {
       when {
         anyOf {
           branch 'main'
@@ -59,19 +67,18 @@ pipeline {
         }
       }
       steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
-                                          usernameVariable: 'DH_USER',
-                                          passwordVariable: 'DH_PASS')]) {
+        withCredentials([sshUserPrivateKey(credentialsId: 'server-ssh-key',
+                                           keyFileVariable: 'SSH_KEY',
+                                           usernameVariable: 'SSH_USER')]) {
           sh '''
             set -eu
-            echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
-
-            IMAGE="${DOCKERHUB_USER}/${IMAGE_NAME}"
-            docker build -t ${IMAGE}:${GIT_SHA} -t ${IMAGE}:latest .
-            docker push ${IMAGE}:${GIT_SHA}
-            docker push ${IMAGE}:latest
-
-            docker logout
+            ssh -i "$SSH_KEY" \\
+                -o StrictHostKeyChecking=no \\
+                -o UserKnownHostsFile=/dev/null \\
+                -o ConnectTimeout=10 \\
+                "$SSH_USER@$DEPLOY_HOST" \\
+                "BRANCH=$BRANCH_NAME GIT_SHA=$GIT_SHA bash -s" \\
+                < infra/jenkins/exchange-fe-deploy.sh
           '''
         }
       }
@@ -79,8 +86,11 @@ pipeline {
   }
 
   post {
-    always {
-      sh 'docker image prune -f --filter "until=24h" || true'
+    success {
+      echo "Pipeline OK. sha=${env.GIT_SHA} branch=${env.BRANCH_NAME}"
+    }
+    failure {
+      echo "Pipeline FAILED at sha ${env.GIT_SHA}"
     }
   }
 }
