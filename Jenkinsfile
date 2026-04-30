@@ -5,7 +5,7 @@
 //   - dockerhub-credentials: Username/password (or PAT) for Docker Hub.
 //
 // Pipeline params:
-//   - DOCKERHUB_USER (default tohieu1603)
+//   - DOCKERHUB_USER (default tohieu16)
 //   - IMAGE_NAME (default micro-exchange-frontend)
 //
 // Wire-up:
@@ -17,7 +17,7 @@ pipeline {
   agent any
 
   parameters {
-    string(name: 'DOCKERHUB_USER', defaultValue: 'tohieu1603',
+    string(name: 'DOCKERHUB_USER', defaultValue: 'tohieu16',
            description: 'Docker Hub user/org for image tag')
     string(name: 'IMAGE_NAME', defaultValue: 'micro-exchange-frontend',
            description: 'Docker image name (without user prefix)')
