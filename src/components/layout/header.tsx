@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Menu, X } from 'lucide-react';
@@ -179,11 +180,16 @@ export function Header() {
             </button>
 
             <Link href="/" className="flex items-center gap-1.5 shrink-0 group">
-              <div className="w-6 h-6 bg-accent flex items-center justify-center transition-all duration-[var(--motion-fast)] group-hover:drop-shadow-[0_0_8px_rgba(240,185,11,0.4)]">
-                <span className="text-black font-black text-[10px]">TX</span>
-              </div>
-              <span className="text-sm font-bold text-text-primary hidden sm:block">
-                ToHieu<span className="text-accent">X</span>
+              <Image
+                src="/logo.png"
+                alt="To Hieu Exchange"
+                width={24}
+                height={24}
+                priority
+                className="w-6 h-6 transition-all duration-[var(--motion-fast)] group-hover:drop-shadow-[0_0_8px_rgba(240,185,11,0.4)]"
+              />
+              <span className="text-sm font-bold text-text-primary hidden sm:block whitespace-nowrap">
+                To Hieu <span className="text-accent">Exchange</span>
               </span>
             </Link>
 
@@ -311,10 +317,8 @@ export function Header() {
             {/* Drawer header */}
             <div className="flex items-center justify-between px-4 h-12 border-b border-border shrink-0">
               <Link href="/" onClick={closeDrawer} className="flex items-center gap-2">
-                <div className="w-6 h-6 bg-accent flex items-center justify-center">
-                  <span className="text-black font-black text-[10px]">TX</span>
-                </div>
-                <span className="text-sm font-bold text-text-primary">ToHieu<span className="text-accent">X</span></span>
+                <Image src="/logo.png" alt="To Hieu Exchange" width={24} height={24} className="w-6 h-6" />
+                <span className="text-sm font-bold text-text-primary whitespace-nowrap">To Hieu <span className="text-accent">Exchange</span></span>
               </Link>
               <button onClick={closeDrawer} className="text-text-muted p-1">
                 <X size={18} />

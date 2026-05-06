@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { GoogleSignInButton } from '@/components/auth/google-sign-in-button';
@@ -56,11 +57,16 @@ export function RegisterForm() {
     <div className="w-full max-w-md">
       <div className="bg-bg-secondary rounded-2xl p-8 border border-border shadow-2xl">
         <div className="text-center mb-8">
-          <div className="w-12 h-12 rounded-xl bg-accent/10 flex items-center justify-center mx-auto mb-4">
-            <span className="text-accent text-2xl font-black">TX</span>
-          </div>
+          <Image
+            src="/logo.png"
+            alt="To Hieu Exchange"
+            width={56}
+            height={56}
+            priority
+            className="mx-auto mb-4 w-14 h-14 rounded-xl"
+          />
           <h1 className="text-2xl font-bold text-text-primary">Create Account</h1>
-          <p className="text-text-secondary text-sm mt-1">Join ToHieuX and start trading</p>
+          <p className="text-text-secondary text-sm mt-1">Join To Hieu Exchange and start trading</p>
         </div>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-5">

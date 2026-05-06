@@ -1,13 +1,14 @@
 'use client';
 
-// Google Identity Services (GIS) sign-in button. Loads the upstream
-// `accounts.google.com/gsi/client` script once and renders Google's HTML
-// button into a div ref. On callback the `credential` (JWT ID token) is
-// POSTed to the BE which verifies + issues HttpOnly cookies.
+// Google Identity Services (GIS) sign-in. We render the upstream-required
+// Google button inside an invisible, full-bleed layer, then paint our own
+// branded button on top (pointer-events: none) so clicks fall through to
+// the GSI iframe. This keeps Google's auth flow + brand-compliance intact
+// while letting us match the rest of the dark UI.
 //
-// Why GIS over a hand-rolled OAuth redirect: zero server-side callback URL
-// required, ID token is signed by Google so the BE can validate offline
-// (no token exchange call), and the popup flow keeps the user on our page.
+// Why not custom-only: GSI's renderButton enforces brand guidelines (logo,
+// padding, focus ring) and is the only path Google guarantees works for
+// the ID-token credential flow we use on the BE.
 
 import { useEffect, useRef } from 'react';
 import { api } from '@/lib/api';
@@ -74,12 +75,32 @@ function loadGsi(): Promise<void> {
 
 interface Props {
   text?: 'signin_with' | 'signup_with' | 'continue_with';
+  label?: string;
   onSuccess?: () => void;
   onError?: (msg: string) => void;
 }
 
-export function GoogleSignInButton({ text = 'continue_with', onSuccess, onError }: Props) {
-  const ref = useRef<HTMLDivElement>(null);
+// Google's official 4-color "G" mark — kept inline so we don't ship an
+// asset roundtrip. Sized via SVG viewBox so parent controls dimensions.
+function GoogleLogo({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z" />
+      <path fill="#FF3D00" d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z" />
+      <path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z" />
+      <path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z" />
+    </svg>
+  );
+}
+
+export function GoogleSignInButton({
+  text = 'continue_with',
+  label = 'Đăng nhập với Google',
+  onSuccess,
+  onError,
+}: Props) {
+  const gsiRef = useRef<HTMLDivElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const { login } = useAuthStore();
   const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
   const missing = !clientId;
@@ -87,44 +108,50 @@ export function GoogleSignInButton({ text = 'continue_with', onSuccess, onError 
   useEffect(() => {
     if (!clientId) return;
     let cancelled = false;
-    loadGsi()
-      .then(() => {
-        if (cancelled || !ref.current || !window.google?.accounts?.id) return;
-        window.google.accounts.id.initialize({
-          client_id: clientId,
-          ux_mode: 'popup',
-          callback: async (resp) => {
-            if (!resp?.credential) return;
-            try {
-              const r = await api.auth.google(resp.credential);
-              if (r.success && r.data?.user) {
-                login(r.data.user);
-                if (onSuccess) onSuccess();
-                else window.location.href = '/';
-              } else {
-                onError?.(r.message || 'Google sign-in failed');
-              }
-            } catch {
-              onError?.('Network error during Google sign-in');
+
+    const render = () => {
+      if (cancelled || !gsiRef.current || !window.google?.accounts?.id) return;
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        ux_mode: 'popup',
+        callback: async (resp) => {
+          if (!resp?.credential) return;
+          try {
+            const r = await api.auth.google(resp.credential);
+            if (r.success && r.data?.user) {
+              login(r.data.user);
+              if (onSuccess) onSuccess();
+              else window.location.href = '/';
+            } else {
+              onError?.(r.message || 'Google sign-in failed');
             }
-          },
-        });
-        // Render fills the parent's width — width: '100%' is not honoured by
-        // GSI, so we pass the measured pixel width instead.
-        const w = ref.current.clientWidth || 320;
-        window.google.accounts.id.renderButton(ref.current, {
-          type: 'standard',
-          theme: 'filled_black',
-          size: 'large',
-          text,
-          shape: 'rectangular',
-          width: w,
-          logo_alignment: 'center',
-        });
-      })
-      .catch(() => onError?.('Failed to load Google sign-in'));
+          } catch {
+            onError?.('Network error during Google sign-in');
+          }
+        },
+      });
+      // Match wrapper width so click-through area covers the full button.
+      const w = wrapperRef.current?.clientWidth || 320;
+      window.google.accounts.id.renderButton(gsiRef.current, {
+        type: 'standard',
+        theme: 'filled_blue',
+        size: 'large',
+        text,
+        shape: 'rectangular',
+        width: w,
+        logo_alignment: 'center',
+      });
+    };
+
+    loadGsi().then(render).catch(() => onError?.('Failed to load Google sign-in'));
+
+    // Re-render on resize so the click-through layer keeps the full width.
+    const ro = wrapperRef.current ? new ResizeObserver(() => render()) : null;
+    if (ro && wrapperRef.current) ro.observe(wrapperRef.current);
+
     return () => {
       cancelled = true;
+      ro?.disconnect();
     };
   }, [text, login, onSuccess, onError, clientId]);
 
@@ -135,6 +162,21 @@ export function GoogleSignInButton({ text = 'continue_with', onSuccess, onError 
       </div>
     );
   }
-  // Min height reserves layout space until GSI renders, avoiding layout shift.
-  return <div ref={ref} className="w-full min-h-[44px] flex justify-center" />;
+
+  return (
+    <div ref={wrapperRef} className="relative w-full group">
+      {/* Hidden but interactive GSI button. Clicks land here through the
+          transparent overlay above. */}
+      <div
+        ref={gsiRef}
+        className="absolute inset-0 opacity-0 [&>*]:!w-full [&>*]:!h-full"
+        aria-hidden="true"
+      />
+      {/* Custom branded UI — does NOT swallow clicks. */}
+      <div className="pointer-events-none flex items-center justify-center gap-3 w-full h-12 rounded-xl bg-white text-gray-900 font-medium text-sm shadow-md border border-gray-200 transition-all duration-150 group-hover:shadow-lg group-hover:-translate-y-0.5 group-active:translate-y-0">
+        <GoogleLogo className="w-5 h-5 shrink-0" />
+        <span>{label}</span>
+      </div>
+    </div>
+  );
 }

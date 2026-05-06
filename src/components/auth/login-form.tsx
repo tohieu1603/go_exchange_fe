@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import Image from 'next/image';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth-store';
 import { StepUpModal } from '@/components/auth/step-up-modal';
@@ -59,11 +60,16 @@ export function LoginForm() {
       {/* Card */}
       <div className="bg-bg-secondary rounded-2xl p-8 border border-border shadow-2xl">
         <div className="text-center mb-8">
-          <div className="w-12 h-12 rounded-xl bg-accent/10 flex items-center justify-center mx-auto mb-4">
-            <span className="text-accent text-2xl font-black">TX</span>
-          </div>
+          <Image
+            src="/logo.png"
+            alt="To Hieu Exchange"
+            width={56}
+            height={56}
+            priority
+            className="mx-auto mb-4 w-14 h-14 rounded-xl"
+          />
           <h1 className="text-2xl font-bold text-text-primary">Welcome back</h1>
-          <p className="text-text-secondary text-sm mt-1">Sign in to your ToHieuX account</p>
+          <p className="text-text-secondary text-sm mt-1">Sign in to your To Hieu Exchange account</p>
         </div>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-5">
