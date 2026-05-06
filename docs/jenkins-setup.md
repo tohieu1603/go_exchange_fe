@@ -28,6 +28,7 @@ Notes:
 - The unit name is `exchange_fe` (NOT `exchange-frontend`). Sudoers entry must NOPASSWD-allow restart of this exact name.
 - Uses `npm install` (not `npm ci`) on the host so a partial-deploy node_modules can self-heal without committing a new lockfile.
 - Health curl goes through `127.0.0.1:80` with a `Host:` header so nginx routes it as the production vhost — confirms the full path (nginx → next) is green, not just :3000.
+- `NEXT_PUBLIC_*` env vars are inlined into the JS bundle at BUILD time, not runtime. The Jenkinsfile sources `/etc/exchange/frontend.env` (when present) before `npm run build` so values like `NEXT_PUBLIC_GOOGLE_CLIENT_ID` end up in the shipped bundle. Editing the file does NOT take effect until the next deploy/rebuild.
 
 ## One-time host setup
 
@@ -52,6 +53,10 @@ NODE_ENV=production
 PORT=3000
 HOSTNAME=0.0.0.0
 NEXT_PUBLIC_API_URL=https://exchange.operis.vn
+# Google Sign-In — must match GOOGLE_CLIENT_ID on auth-service.
+# Same Client ID, set in BOTH places. Origins must include
+# https://exchange.operis.vn in Google Cloud Console.
+NEXT_PUBLIC_GOOGLE_CLIENT_ID=
 EOF
 sudo chown oceanroot:oceanroot /etc/exchange/frontend.env
 sudo chmod 640 /etc/exchange/frontend.env
@@ -146,6 +151,8 @@ Agent needs `node` 20 + `npm` + `git` + `ssh`. NOT Docker.
 | Health curl returns 404 | nginx vhost not loaded or `Host` header doesn't match `server_name`. `sudo nginx -t && sudo nginx -s reload`. |
 | Health curl returns 502 | Next process didn't come back up. `sudo journalctl -u exchange_fe -n 50`. |
 | Lint stage flooding logs | Drop the `|| true` on the lint stage once warnings are cleaned up to enforce zero-warning. |
+| Google button shows "missing NEXT_PUBLIC_GOOGLE_CLIENT_ID" | Set the var in `/etc/exchange/frontend.env` AND re-deploy (`NEXT_PUBLIC_*` is bundled at build time, not runtime). |
+| Google sign-in popup → `redirect_uri_mismatch` or `idpiframe_initialization_failed` | `https://exchange.operis.vn` not listed under "Authorized JavaScript origins" in the Google OAuth Client. Add it and wait ~1 min for propagation. |
 
 ## What lives where
 

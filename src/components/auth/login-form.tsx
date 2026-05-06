@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { api } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth-store';
 import { StepUpModal } from '@/components/auth/step-up-modal';
+import { GoogleSignInButton } from '@/components/auth/google-sign-in-button';
 
 export function LoginForm() {
   const { login } = useAuthStore();
@@ -107,6 +108,13 @@ export function LoginForm() {
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>
+
+        <div className="flex items-center gap-3 my-5">
+          <div className="flex-1 h-px bg-border" />
+          <span className="text-xs text-text-muted uppercase tracking-wide">or</span>
+          <div className="flex-1 h-px bg-border" />
+        </div>
+        <GoogleSignInButton text="continue_with" onError={(m) => setError(m)} />
 
         <p className="text-center text-text-secondary text-sm mt-6">
           Don&apos;t have an account?{' '}

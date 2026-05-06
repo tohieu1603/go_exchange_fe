@@ -120,9 +120,17 @@ export default function AccountPage() {
     if (newPw !== confirmPw) { toast.error('Passwords do not match'); return; }
     if (newPw.length < 6) { toast.error('Password must be at least 6 characters'); return; }
     setChangingPw(true);
-    const res = await api.auth.changePassword(oldPw, newPw);
-    if (res.success) { toast.success('Password changed'); setOldPw(''); setNewPw(''); setConfirmPw(''); }
-    else toast.error(res.message || 'Failed to change password');
+    // Branch on hasPassword: OAuth-only accounts have no current password
+    // to verify, so they hit the dedicated set-password endpoint instead.
+    const res = user?.hasPassword === false
+      ? await api.auth.setPassword(newPw)
+      : await api.auth.changePassword(oldPw, newPw);
+    if (res.success) {
+      toast.success(user?.hasPassword === false ? 'Password set' : 'Password changed');
+      setOldPw(''); setNewPw(''); setConfirmPw('');
+      // Refresh profile so the form switches to "Change" mode without a reload.
+      api.auth.profile().then((r) => { if (r.data) setUser(r.data); });
+    } else toast.error(res.message || 'Failed');
     setChangingPw(false);
   }
 
@@ -262,12 +270,21 @@ export default function AccountPage() {
         {/* Security Tab */}
         {tab === 'security' && (
           <div className="space-y-6">
-            {/* Change Password */}
+            {/* Change/Set Password — OAuth-only accounts hit set-password (no current pw to verify) */}
             <div className="bg-bg-secondary border border-border p-6 space-y-4">
-              <h2 className="text-base font-semibold text-text-primary">Change Password</h2>
-              <input type="password" value={oldPw} onChange={(e) => setOldPw(e.target.value)}
-                placeholder="Current password"
-                className="w-full px-3 py-2 bg-bg-tertiary border border-border text-text-primary text-sm outline-none focus:border-accent" />
+              <h2 className="text-base font-semibold text-text-primary">
+                {user?.hasPassword === false ? 'Set Password' : 'Change Password'}
+              </h2>
+              {user?.hasPassword === false && (
+                <p className="text-xs text-text-secondary">
+                  Your account was created via Google. Set a password to also enable email/password login.
+                </p>
+              )}
+              {user?.hasPassword !== false && (
+                <input type="password" value={oldPw} onChange={(e) => setOldPw(e.target.value)}
+                  placeholder="Current password"
+                  className="w-full px-3 py-2 bg-bg-tertiary border border-border text-text-primary text-sm outline-none focus:border-accent" />
+              )}
               <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)}
                 placeholder="New password"
                 className="w-full px-3 py-2 bg-bg-tertiary border border-border text-text-primary text-sm outline-none focus:border-accent" />
@@ -276,7 +293,9 @@ export default function AccountPage() {
                 className="w-full px-3 py-2 bg-bg-tertiary border border-border text-text-primary text-sm outline-none focus:border-accent" />
               <button onClick={handleChangePassword} disabled={changingPw}
                 className="px-6 py-2.5 bg-accent text-black font-semibold text-sm hover:bg-accent-hover transition-colors disabled:opacity-60">
-                {changingPw ? 'Changing...' : 'Change Password'}
+                {changingPw
+                  ? (user?.hasPassword === false ? 'Setting...' : 'Changing...')
+                  : (user?.hasPassword === false ? 'Set Password' : 'Change Password')}
               </button>
             </div>
 

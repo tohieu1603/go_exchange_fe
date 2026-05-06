@@ -30,10 +30,14 @@ export const api = {
       ),
     register: (email: string, password: string, fullName: string) =>
       post<User>('/auth/register', { email, password, fullName }),
+    google: (idToken: string) =>
+      post<{ user: User }>('/auth/google', { idToken }),
     profile: () => get<User>('/auth/profile'),
     updateProfile: (data: { fullName?: string }) => put<User>('/auth/profile', data),
     changePassword: (oldPassword: string, newPassword: string) =>
       post<void>('/auth/change-password', { oldPassword, newPassword }),
+    setPassword: (newPassword: string) =>
+      post<void>('/auth/set-password', { newPassword }),
     enable2FA: () => post<{ qrCodeUrl: string; secret: string }>('/auth/2fa/enable'),
     verify2FA: (code: string) => post<void>('/auth/2fa/verify', { code }),
     disable2FA: (code: string) => post<void>('/auth/2fa/disable', { code }),

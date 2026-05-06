@@ -5,6 +5,10 @@ export interface User {
   role: string;
   kycStatus: string;
   is2FA: boolean;
+  avatarUrl?: string;
+  // Set by BE AfterFind hook (false for OAuth-only accounts).
+  // Drives the Set vs Change password UI on /account.
+  hasPassword?: boolean;
 }
 
 export interface Wallet {

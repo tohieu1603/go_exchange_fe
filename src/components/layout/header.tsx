@@ -263,9 +263,15 @@ export function Header() {
                     </Link>
                   );
                 })()}
-                {/* User avatar */}
-                <Link href="/account" className="w-7 h-7 bg-accent/20 flex items-center justify-center hover:bg-accent/30 transition-colors shrink-0">
-                  <span className="text-accent text-[10px] font-bold">{user?.email?.[0]?.toUpperCase() || 'U'}</span>
+                {/* User avatar — render Google profile picture when available, fall back to initial. */}
+                <Link href="/account" className="w-7 h-7 bg-accent/20 flex items-center justify-center hover:bg-accent/30 transition-colors shrink-0 overflow-hidden">
+                  {user?.avatarUrl ? (
+                    // Use plain <img> so referrer/CORS quirks don't trigger Next/Image's loader proxy.
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={user.avatarUrl} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                  ) : (
+                    <span className="text-accent text-[10px] font-bold">{user?.email?.[0]?.toUpperCase() || 'U'}</span>
+                  )}
                 </Link>
                 {/* Logout — hidden on mobile (in drawer instead) */}
                 <button

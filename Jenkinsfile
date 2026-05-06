@@ -71,6 +71,17 @@ git fetch origin
 git reset --hard origin/main
 git clean -fd
 
+# NEXT_PUBLIC_* are inlined into the JS bundle at BUILD time, not
+# runtime. systemd's EnvironmentFile only kicks in at start, so we
+# must source /etc/exchange/frontend.env into the build shell here.
+# `set -a` auto-exports every var the file sets, so `npm run build`
+# sees them. Skip silently if the file is missing (dev hosts).
+if [ -f /etc/exchange/frontend.env ]; then
+  set -a
+  . /etc/exchange/frontend.env
+  set +a
+fi
+
 # `npm install` (not `npm ci`) so the host can heal a broken
 # node_modules after a partial deploy without forcing a
 # lockfile commit. Trade-off: marginally less deterministic.

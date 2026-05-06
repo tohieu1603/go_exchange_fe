@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
+import { GoogleSignInButton } from '@/components/auth/google-sign-in-button';
 
 interface Errors {
   email?: string;
@@ -118,6 +119,13 @@ export function RegisterForm() {
             {loading ? 'Creating account...' : 'Create Account'}
           </button>
         </form>
+
+        <div className="flex items-center gap-3 my-5">
+          <div className="flex-1 h-px bg-border" />
+          <span className="text-xs text-text-muted uppercase tracking-wide">or</span>
+          <div className="flex-1 h-px bg-border" />
+        </div>
+        <GoogleSignInButton text="signup_with" onError={(m) => setApiError(m)} />
 
         <p className="text-center text-text-secondary text-sm mt-6">
           Already have an account?{' '}
